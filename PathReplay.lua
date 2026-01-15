@@ -729,7 +729,7 @@ local ReplayData = {
 	UpdateMS = 0,
 	ForceUpdate = false
 }
-
+local InterpolationFactor = 10.0
 RecordFeatures[#RecordFeatures+1] = {
 	Hash = Utils.Joaat("Replay_StartRecording"),
 	Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_StartRecording"), "Start Recording", eFeatureType.Toggle, "Supports recording more than one vehicle at the same time.",
@@ -984,7 +984,7 @@ RecordFeatures[#RecordFeatures+1] = {
 										ENTITY.FREEZE_ENTITY_POSITION(Veh, false) -- modo normal (suave)
 										SetEntitySpeedToCoord(Veh, F.Pos, 1.0, false, false, false, F.Vel.x, F.Vel.y, F.Vel
 														.z, false, false, nil)
-										RotateEntityToTargetRotation(Veh, F.Rot, 10.0)
+										RotateEntityToTargetRotation(Veh, F.Rot, InterpolationFactor)
 									else
 										Records[k].ReplayTP = false
 										if Records[k].LastIndex >= #Records[k].FramesData[#Records[k].FramesData] then
@@ -1289,7 +1289,7 @@ local ReplayPlayback = {
 						if not ReplayTeleportMode and DistanceBetween(CurCoord.x, CurCoord.y, CurCoord.z, Coord.x, Coord.y, Coord.z) < 50.0 and not ReplayData.IsRewinding and not ReplayData.ForceUpdate then
 							SetEntitySpeedToCoord(Veh, Coord, 1.0,
 								false, false, false, Vel.x, Vel.y, Vel.z, false, false, nil)
-							RotateEntityToTargetRotation(Veh, Rot, 10.0)
+							RotateEntityToTargetRotation(Veh, Rot, InterpolationFactor)
 						else
 							ENTITY.SET_ENTITY_COORDS_NO_OFFSET(Veh, Coord.x, Coord.y, Coord.z)
 							ENTITY.SET_ENTITY_ROTATION(Veh, Rot.x, Rot.y, Rot.z, 5)
@@ -1338,6 +1338,14 @@ local ReplayPlayback = {
 function StartReplaysPlayback(Run)
 	return ReplayPlayback[ReplayID](ReplayVehsT, Run, true)
 end
+
+ReplayFeatures[#ReplayFeatures+1] = {Hash = Utils.Joaat("Replay_InterpolationFactor"),
+	Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_InterpolationFactor"), "Interpolation Factor", eFeatureType.InputFloat,
+	"",
+	function(f)
+		InterpolationFactor = f:GetFloatValue()
+	end):SetMaxValue(10.0):SetMinValue(1.0):SetValue(InterpolationFactor)
+}
 
 ReplayFeatures[#ReplayFeatures+1] = {Hash = Utils.Joaat("Replay_StartSelectedReplays"),
 	Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_StartSelectedReplays"), "Start Selected Replays", eFeatureType.Toggle,
@@ -2136,6 +2144,18 @@ Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSetFileName"), "Game Mode 
 	end)
 }
 
+GMFeatures.GMLoadGameModeFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSaveGameMode"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSaveGameMode"), "Save Game Mode", eFeatureType.Button, "",
+	function()
+		local T = {
+			MissionVehicles = GameModeMakerData.MissionVehicles
+		}
+		SaveJSONFile(GameModesDir..GameModeMakerData.GameModeName..".json", T)
+		GetGameModesList()
+	end)
+}
+
 GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMRefreshGameModes"),
 Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMRefreshGameModes"), "Refresh Game Modes", eFeatureType.Button, "",
 	function()
@@ -2167,17 +2187,6 @@ Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMLoadGameMode"), "Load Game
 			GMFeatures.GMVehRespawnForTeamFeature:SetValue(Data.RespawnVehForTeam)
 			GMFeatures.GMVehUseBoolFeature:SetValue(Data.Use)
 		end
-	end)
-}
-GMFeatures.GMLoadGameModeFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
-GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSaveGameMode"),
-Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSaveGameMode"), "Save Game Mode", eFeatureType.Button, "",
-	function()
-		local T = {
-			MissionVehicles = GameModeMakerData.MissionVehicles
-		}
-		SaveJSONFile(GameModesDir..GameModeMakerData.GameModeName..".json", T)
-		GetGameModesList()
 	end)
 }
 
