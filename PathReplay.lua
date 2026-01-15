@@ -2036,12 +2036,12 @@ Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_RunGameMode"), "Run Game Mod
 						end
 					end
 				end
-				local PlayerID = PLAYER.PLAYER_ID()
 				local HostMilis = 0
 				local VehsLocal = SplitGlobals("uLocal_23609.f_834.f_81")
 				local VehIDs = {}
 				while RunGameMode do
 					if SCRIPT.GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH(SHash) > 0 then
+						local PlayerID = PLAYER.PLAYER_ID()
 						local IsHost = false
 						Script.ExecuteAsScript("fm_mission_controller", function()
 							IsHost = NETWORK.NETWORK_IS_HOST_OF_THIS_SCRIPT()
