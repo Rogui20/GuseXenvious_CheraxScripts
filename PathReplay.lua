@@ -2144,7 +2144,6 @@ Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSetFileName"), "Game Mode 
 	end)
 }
 
-GMFeatures.GMLoadGameModeFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
 GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSaveGameMode"),
 Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSaveGameMode"), "Save Game Mode", eFeatureType.Button, "",
 	function()
@@ -2189,7 +2188,7 @@ Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMLoadGameMode"), "Load Game
 		end
 	end)
 }
-
+GMFeatures.GMLoadGameModeFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
 function FindReplayIndex(ReplayFile)
 	local Index = 1
 	for k = 1, #ReplayListFeatures do
