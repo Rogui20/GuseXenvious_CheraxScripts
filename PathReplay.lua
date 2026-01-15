@@ -15,6 +15,9 @@ function SplitGlobals(GlobalString)
     return total
 end
 
+function ToFloat(V)
+	return V * 1.0
+end
 
 --[[  Stand API Compatible v3 Implementation (for Cherax)
       Author: Adapted by ChatGPT
@@ -312,12 +315,52 @@ local RecordFeatures = {}
 
 local ReplaysToLoad = {}
 
+local GameModeMakerData = {
+	MissionVehicles = {},
+	Vehicles = {},
+	PreviewVehicles = {},
+	MaxVehicles = 32,
+	ListVehicles = {},
+	ListVehicleTypes = {
+		"Normal",
+		"Replay"
+	},
+	ListReplayFiles = {},
+	VehicleTypesEnum = {
+		Normal = 1,
+		Replay = 2
+	},
+	GMVehIndex = 1,
+	GameModeName = "MyGameMode",
+	GameModesList = {},
+	GameModes = {}
+}
+
+local GMFeatures = {
+	GMVehIndexFeature = nil,
+	GMVehTypeFeature = nil,
+	GMVehReplayFileFeature = nil,
+	GMVehInvincibleFeature = nil,
+	GMVehAttachedToFeature = nil,
+	GMVehAttachOffsetXFeature = nil,
+	GMVehAttachOffsetYFeature = nil,
+	GMVehAttachOffsetZFeature = nil,
+	GMVehAttachRotXFeature = nil,
+	GMVehAttachRotYFeature = nil,
+	GMVehAttachRotZFeature = nil,
+	GMVehRespawnForTeamFeature = nil,
+	GMVehUseBoolFeature = nil,
+
+	GMLoadGameModeFeature = nil
+}
+
 function GetReplaysList()
 	for k = 1, #ReplayListFeatures do
 		FeatureMgr.RemoveFeature(ReplayListFeatures[k].Hash)
 	end
 	ReplayListFeatures = {}
 	ReplaysToLoad = {}
+	GameModeMakerData.ListReplayFiles = {}
 	local Files = FileMgr.FindFiles(PathDirSaveds, ".txt", false)
 	for k = 1, #Files do
 		local _, FileName, Ext = string.match(Files[k], "(.-)([^\\/]-%.?)[.]([^%.\\/]*)$")
@@ -335,8 +378,30 @@ function GetReplaysList()
 				FileName = FileName,
 				FilePath = Files[k]
 			}
+			GameModeMakerData.ListReplayFiles[#GameModeMakerData.ListReplayFiles+1] = FileName
 		end
 	end
+	Script.QueueJob(function()
+		Script.Yield(1000)
+		GMFeatures.GMVehReplayFileFeature:SetList(GameModeMakerData.ListReplayFiles)
+	end)
+end
+
+function GetGameModesList()
+	GameModeMakerData.GameModesList = {}
+	GameModeMakerData.GameModes = {}
+	local Files = FileMgr.FindFiles(GameModesDir, ".json", false)
+	for k = 1, #Files do
+		local _, FileName, Ext = string.match(Files[k], "(.-)([^\\/]-%.?)[.]([^%.\\/]*)$")
+		if Ext == "json" then
+			GameModeMakerData.GameModesList[#GameModeMakerData.GameModesList+1] = FileName
+			GameModeMakerData.GameModes[#GameModeMakerData.GameModes+1] = Files[k]
+		end
+	end
+	Script.QueueJob(function()
+		Script.Yield(1000)
+		GMFeatures.GMLoadGameModeFeature:SetList(GameModeMakerData.GameModesList)
+	end)
 end
 
 FeatureMgr.AddFeature(Utils.Joaat("Replay_RefreshReplays"), "Refresh Replays", eFeatureType.Button, "Updates the replay list.", function(f)
@@ -350,6 +415,7 @@ RecordFeatures[#RecordFeatures+1] = {Hash = Utils.Joaat("Replay_SetFileName"), F
 	}
 
 GetReplaysList()
+GetGameModesList()
 
 function ClearFile(FileName)
 	local File = io.open(FileName, "w") -- Abrir em modo de escrita ("w") para limpar
@@ -656,7 +722,14 @@ RecordFeatures[#RecordFeatures+1] = {
 
 local PauseReplay = false
 local PauseReplayFeature = nil
-local ReplayData = {}
+local ReplayData = {
+	StartTimer = 0,
+	LastGameTimer = MISC.GET_GAME_TIMER(),
+	IsRewinding = false,
+	UpdateMS = 0,
+	ForceUpdate = false
+}
+
 RecordFeatures[#RecordFeatures+1] = {
 	Hash = Utils.Joaat("Replay_StartRecording"),
 	Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_StartRecording"), "Start Recording", eFeatureType.Toggle, "Supports recording more than one vehicle at the same time.",
@@ -1061,9 +1134,9 @@ function GetBiggestReplayTime()
 end
 
 local ReplayPlayback = {
-	[0] = function()
+	[0] = function(T)
 		for k, value in pairs(ReplaysToLoad) do
-			ReplayVehsT[#ReplayVehsT + 1] = {
+			T[#T + 1] = {
 				VehHandle = 0,
 				ModelHash = 0,
 				Paths = GetVectorsTable(k, true, false),
@@ -1081,61 +1154,62 @@ local ReplayPlayback = {
 		ReplayID = 1
 		return false
 	end,
-	[1] = function()
-		for k = 1, #ReplayVehsT do
-			if ReplayVehsT[k].Paths ~= nil and ReplayVehsT[k].Paths[1] ~= nil then
+	[1] = function(T)
+		for k = 1, #T do
+			if T[k].Paths ~= nil and T[k].Paths[1] ~= nil then
 				if not UseStoredVehicleModel then
-					ReplayVehsT[k].Paths[1].ModelHash = Utils.Joaat(Model)
+					T[k].Paths[1].ModelHash = Utils.Joaat(Model)
 				end
-				ReplayVehsT[k].ModelHash = ReplayVehsT[k].Paths[1].ModelHash or Utils.Joaat(Model)
-				if ReplayVehsT[k].VehHandle == 0 then
-					if not STREAMING.IS_MODEL_VALID(ReplayVehsT[k].ModelHash) then
-						ReplayVehsT[k].ModelHash = Utils.Joaat(Model)
+				T[k].ModelHash = T[k].Paths[1].ModelHash or Utils.Joaat(Model)
+				if T[k].VehHandle == 0 then
+					if not STREAMING.IS_MODEL_VALID(T[k].ModelHash) then
+						T[k].ModelHash = Utils.Joaat(Model)
 					end
-					ReplayVehsT[k].IsCargoPlane = ReplayVehsT[k].ModelHash == Utils.Joaat("cargoplane") or
-						ReplayVehsT[k].ModelHash == Utils.Joaat("cargoplane2")
-					RequestModel(ReplayVehsT[k].ModelHash)
-					ReplayVehsT[k].VehHandle = GTA.SpawnVehicle(ReplayVehsT[k].ModelHash, ReplayVehsT[k].Paths[1].x,
-						ReplayVehsT[k].Paths[1].y, ReplayVehsT[k].Paths[1].z, ReplayVehsT[k].Paths[1].RotZ, true, false)
-					if ReplayVehsT[k].VehHandle ~= 0 then
-						STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED(ReplayVehsT[k].ModelHash)
-						ENTITY.SET_ENTITY_AS_MISSION_ENTITY(ReplayVehsT[k].VehHandle, false, true)
-						entities.set_can_migrate(ReplayVehsT[k].VehHandle, false)
-						ENTITY.SET_ENTITY_INVINCIBLE(ReplayVehsT[k].VehHandle, true)
-						NETWORK.NETWORK_SET_ENTITY_CAN_BLEND(ReplayVehsT[k].VehHandle, true)
-						ReplayVehsT[k].Blip = HUD.ADD_BLIP_FOR_ENTITY(ReplayVehsT[k].VehHandle)
-						HUD.SET_BLIP_COLOUR(ReplayVehsT[k].Blip, 3)
-						UpgradeVehicle(ReplayVehsT[k].VehHandle, true, true, true)
+					T[k].IsCargoPlane = T[k].ModelHash == Utils.Joaat("cargoplane") or
+						T[k].ModelHash == Utils.Joaat("cargoplane2")
+					RequestModel(T[k].ModelHash)
+					T[k].VehHandle = GTA.SpawnVehicle(T[k].ModelHash, T[k].Paths[1].x,
+						T[k].Paths[1].y, T[k].Paths[1].z, T[k].Paths[1].RotZ, true, false)
+					if T[k].VehHandle ~= 0 then
+						STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED(T[k].ModelHash)
+						ENTITY.SET_ENTITY_AS_MISSION_ENTITY(T[k].VehHandle, false, true)
+						entities.set_can_migrate(T[k].VehHandle, false)
+						ENTITY.SET_ENTITY_INVINCIBLE(T[k].VehHandle, true)
+						NETWORK.NETWORK_SET_ENTITY_CAN_BLEND(T[k].VehHandle, true)
+						T[k].Blip = HUD.ADD_BLIP_FOR_ENTITY(T[k].VehHandle)
+						HUD.SET_BLIP_COLOUR(T[k].Blip, 3)
+						UpgradeVehicle(T[k].VehHandle, true, true, true)
 						if CreatePedToReplay then
-							if VEHICLE.IS_VEHICLE_DRIVEABLE(ReplayVehsT[k].VehHandle, false) then
+							if VEHICLE.IS_VEHICLE_DRIVEABLE(T[k].VehHandle, false) then
 								RequestModel(Utils.Joaat(PedModel))
-								ReplayVehsT[k].PedHandle = GTA.CreatePed(Utils.Joaat(PedModel), 28, ReplayVehsT[k].Paths[1].x,
-									ReplayVehsT[k].Paths[1].y, ReplayVehsT[k].Paths[1].z, ReplayVehsT[k].Paths[1].RotZ,
+								T[k].PedHandle = GTA.CreatePed(Utils.Joaat(PedModel), 28, T[k].Paths[1].x,
+									T[k].Paths[1].y, T[k].Paths[1].z, T[k].Paths[1].RotZ,
 									true, false)
-								if ReplayVehsT[k].PedHandle ~= 0 then
-									PED.SET_PED_INTO_VEHICLE(ReplayVehsT[k].PedHandle, ReplayVehsT[k].VehHandle, -1)
+								if T[k].PedHandle ~= 0 then
+									PED.SET_PED_INTO_VEHICLE(T[k].PedHandle, T[k].VehHandle, -1)
 									STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED(Utils.Joaat(PedModel))
-									ENTITY.SET_ENTITY_AS_MISSION_ENTITY(ReplayVehsT[k].PedHandle, false, true)
-									entities.set_can_migrate(ReplayVehsT[k].PedHandle, false)
-									ENTITY.SET_ENTITY_INVINCIBLE(ReplayVehsT[k].PedHandle, true)
-									NETWORK.NETWORK_SET_ENTITY_CAN_BLEND(ReplayVehsT[k].PedHandle, true)
-									ReplayVehsT[k].PedBlip = HUD.ADD_BLIP_FOR_ENTITY(ReplayVehsT[k].PedHandle)
-									HUD.SET_BLIP_COLOUR(ReplayVehsT[k].PedBlip, 1)
-									HUD.SHOW_HEADING_INDICATOR_ON_BLIP(ReplayVehsT[k].PedBlip, true)
-									PED.SET_PED_COMBAT_ATTRIBUTES(ReplayVehsT[k].PedHandle, 3, false)
-									PED.SET_PED_CAN_BE_KNOCKED_OFF_VEHICLE(ReplayVehsT[k].PedHandle, 1)
+									ENTITY.SET_ENTITY_AS_MISSION_ENTITY(T[k].PedHandle, false, true)
+									entities.set_can_migrate(T[k].PedHandle, false)
+									ENTITY.SET_ENTITY_INVINCIBLE(T[k].PedHandle, true)
+									NETWORK.NETWORK_SET_ENTITY_CAN_BLEND(T[k].PedHandle, true)
+									T[k].PedBlip = HUD.ADD_BLIP_FOR_ENTITY(T[k].PedHandle)
+									HUD.SET_BLIP_COLOUR(T[k].PedBlip, 1)
+									HUD.SHOW_HEADING_INDICATOR_ON_BLIP(T[k].PedBlip, true)
+									PED.SET_PED_COMBAT_ATTRIBUTES(T[k].PedHandle, 3, false)
+									PED.SET_PED_CAN_BE_KNOCKED_OFF_VEHICLE(T[k].PedHandle, 1)
+									PED.SET_PED_RELATIONSHIP_GROUP_HASH(T[k].PedHandle, Utils.Joaat(AiLikeRel))
 								else
 									STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED(Utils.Joaat(PedModel))
 								end
 							end
 						end
-						ENTITY.FREEZE_ENTITY_POSITION(ReplayVehsT[k].VehHandle, true)
-						ENTITY.SET_ENTITY_COORDS(ReplayVehsT[k].VehHandle, ReplayVehsT[k].Paths[1].x,
-							ReplayVehsT[k].Paths[1].y, ReplayVehsT[k].Paths[1].z)
-						ENTITY.SET_ENTITY_ROTATION(ReplayVehsT[k].VehHandle, ReplayVehsT[k].Paths[1].RotX,
-							ReplayVehsT[k].Paths[1].RotY, ReplayVehsT[k].Paths[1].RotZ, 5)
+						ENTITY.FREEZE_ENTITY_POSITION(T[k].VehHandle, true)
+						ENTITY.SET_ENTITY_COORDS(T[k].VehHandle, T[k].Paths[1].x,
+							T[k].Paths[1].y, T[k].Paths[1].z)
+						ENTITY.SET_ENTITY_ROTATION(T[k].VehHandle, T[k].Paths[1].RotX,
+							T[k].Paths[1].RotY, T[k].Paths[1].RotZ, 5)
 					else
-						STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED(ReplayVehsT[k].ModelHash)
+						STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED(T[k].ModelHash)
 					end
 				end
 			end
@@ -1150,7 +1224,7 @@ local ReplayPlayback = {
 		ReplayID = 2
 		return false
 	end,
-	[2] = function()
+	[2] = function(T, Run, CanClearTable)
 		local GameTimer = MISC.GET_GAME_TIMER()
 		local DeltaTime = GameTimer - ReplayData.LastGameTimer
 		if DeltaTime < 0 then DeltaTime = 0 end
@@ -1159,96 +1233,100 @@ local ReplayPlayback = {
 		if GameTimer > ReplayData.UpdateMS then
 			ReplayPlaybackTimeFeature:SetValue(ReplayData.StartTimer)
 		end
-		for k = #ReplayVehsT, 1, -1 do
-			local Veh = ReplayVehsT[k].VehHandle
+		for k = #T, 1, -1 do
+			local Veh = T[k].VehHandle
 			if Veh ~= 0 and ENTITY.DOES_ENTITY_EXIST(Veh) then
-				ENTITY.FREEZE_ENTITY_POSITION(ReplayVehsT[k].VehHandle, false)
-				if ReplayVehsT[k].Index == 0 then
-					ReplayVehsT[k].Index = 1
-					local PathsData = ReplayVehsT[k].Paths[1]
-					ENTITY.SET_ENTITY_COORDS(Veh, PathsData.x, PathsData.y, PathsData.z)
-					ENTITY.SET_ENTITY_ROTATION(Veh, PathsData.RotX, PathsData.RotY, PathsData.RotZ, 5)
-					if not ReplayVehsT[k].HasSetStartTimer then
-						ReplayVehsT[k].HasSetStartTimer = true
-						ReplayVehsT[k].StartTimer = ReplayData.StartTimer
+				if not ENTITY.IS_ENTITY_DEAD(Veh) then
+					ENTITY.FREEZE_ENTITY_POSITION(T[k].VehHandle, false)
+					if T[k].Index == 0 then
+						T[k].Index = 1
+						local PathsData = T[k].Paths[1]
+						ENTITY.SET_ENTITY_COORDS(Veh, PathsData.x, PathsData.y, PathsData.z)
+						ENTITY.SET_ENTITY_ROTATION(Veh, PathsData.RotX, PathsData.RotY, PathsData.RotZ, 5)
+						if not T[k].HasSetStartTimer then
+							T[k].HasSetStartTimer = true
+							T[k].StartTimer = ReplayData.StartTimer
+						else
+							T[k].StartTimer = 0
+						end
+					end
+					if T[k].Index > 0 and T[k].Index < #T[k].Paths then
+						UpdateReplayIndexByTime2(T[k], ReplayData.StartTimer)
+						local Coord = {
+							x = T[k].Paths[T[k].Index].x,
+							y = T[k].Paths[T[k].Index].y,
+							z = T[k].Paths[T[k].Index].z
+						}
+						local Rot = {
+							x = T[k].Paths[T[k].Index].RotX,
+							y = T[k].Paths[T[k].Index].RotY,
+							z = T[k].Paths[T[k].Index].RotZ
+						}
+						local Vel = {
+							x = T[k].Paths[T[k].Index].VelX,
+							y = T[k].Paths[T[k].Index].VelY,
+							z = T[k].Paths[T[k].Index].VelZ
+						}
+						local AngVel = {
+							x = T[k].Paths[T[k].Index].AngVelX,
+							y = T[k].Paths[T[k].Index].AngVelY,
+							z = T[k].Paths[T[k].Index].AngVelZ
+						}
+						if T[k].IsCargoPlane then
+							VEHICLE.SET_DOOR_ALLOWED_TO_BE_BROKEN_OFF(Veh, 2, false)
+							VEHICLE.SET_VEHICLE_DOOR_CONTROL(Veh, 2, 180.0, 180.0)
+							if not VEHICLE.IS_VEHICLE_DOOR_DAMAGED(Veh, 4) then
+								VEHICLE.SET_VEHICLE_DOOR_BROKEN(Veh, 4, false)
+							end
+						end
+						if T[k].PedHandle ~= 0 and ENTITY.DOES_ENTITY_EXIST(T[k].PedHandle) then
+							if GameTimer > T[k].TaskMS then
+								T[k].TaskMS = GameTimer + 1000
+								TASK.TASK_VEHICLE_TEMP_ACTION(T[k].PedHandle, Veh, 32, 2000)
+							end
+						end
+						local CurCoord = ENTITY.GET_ENTITY_COORDS(Veh)
+						if not ReplayTeleportMode and DistanceBetween(CurCoord.x, CurCoord.y, CurCoord.z, Coord.x, Coord.y, Coord.z) < 50.0 and not ReplayData.IsRewinding and not ReplayData.ForceUpdate then
+							SetEntitySpeedToCoord(Veh, Coord, 1.0,
+								false, false, false, Vel.x, Vel.y, Vel.z, false, false, nil)
+							RotateEntityToTargetRotation(Veh, Rot, 10.0)
+						else
+							ENTITY.SET_ENTITY_COORDS_NO_OFFSET(Veh, Coord.x, Coord.y, Coord.z)
+							ENTITY.SET_ENTITY_ROTATION(Veh, Rot.x, Rot.y, Rot.z, 5)
+							if not PauseReplay or RecordingV2 then
+								VEHICLE.SET_VEHICLE_FORWARD_SPEED(Veh,
+									math.sqrt(Vel.x ^ 2 + Vel.y ^ 2 + Vel.z ^ 2))
+								ENTITY.SET_ENTITY_VELOCITY(Veh, Vel.x, Vel.y, Vel.z)
+								ENTITY.SET_ENTITY_ANGULAR_VELOCITY(Veh, AngVel.x, AngVel.y, AngVel.z)
+							end
+						end
 					else
-						ReplayVehsT[k].StartTimer = 0
+						T[k].Index = 0
 					end
-				end
-				if ReplayVehsT[k].Index > 0 and ReplayVehsT[k].Index < #ReplayVehsT[k].Paths then
-					UpdateReplayIndexByTime2(ReplayVehsT[k], ReplayData.StartTimer)
-					local Coord = {
-						x = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].x,
-						y = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].y,
-						z = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].z
-					}
-					local Rot = {
-						x = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].RotX,
-						y = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].RotY,
-						z = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].RotZ
-					}
-					local Vel = {
-						x = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].VelX,
-						y = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].VelY,
-						z = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].VelZ
-					}
-					local AngVel = {
-						x = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].AngVelX,
-						y = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].AngVelY,
-						z = ReplayVehsT[k].Paths[ReplayVehsT[k].Index].AngVelZ
-					}
-					if ReplayVehsT[k].IsCargoPlane then
-						VEHICLE.SET_DOOR_ALLOWED_TO_BE_BROKEN_OFF(Veh, 2, false)
-						VEHICLE.SET_VEHICLE_DOOR_CONTROL(Veh, 2, 180.0, 180.0)
-						if not VEHICLE.IS_VEHICLE_DOOR_DAMAGED(Veh, 4) then
-							VEHICLE.SET_VEHICLE_DOOR_BROKEN(Veh, 4, false)
-						end
-					end
-					if ReplayVehsT[k].PedHandle ~= 0 and ENTITY.DOES_ENTITY_EXIST(ReplayVehsT[k].PedHandle) then
-						if GameTimer > ReplayVehsT[k].TaskMS then
-							ReplayVehsT[k].TaskMS = GameTimer + 1000
-							TASK.TASK_VEHICLE_TEMP_ACTION(ReplayVehsT[k].PedHandle, Veh, 32, 2000)
-						end
-					end
-					local CurCoord = ENTITY.GET_ENTITY_COORDS(Veh)
-					if not ReplayTeleportMode and DistanceBetween(CurCoord.x, CurCoord.y, CurCoord.z, Coord.x, Coord.y, Coord.z) < 50.0 and not ReplayData.IsRewinding and not ReplayData.ForceUpdate then
-						SetEntitySpeedToCoord(Veh, Coord, 1.0,
-							false, false, false, Vel.x, Vel.y, Vel.z, false, false, nil)
-						RotateEntityToTargetRotation(Veh, Rot, 10.0)
-					else
-						ENTITY.SET_ENTITY_COORDS_NO_OFFSET(Veh, Coord.x, Coord.y, Coord.z)
-						ENTITY.SET_ENTITY_ROTATION(Veh, Rot.x, Rot.y, Rot.z, 5)
-						if not PauseReplay or RecordingV2 then
-							VEHICLE.SET_VEHICLE_FORWARD_SPEED(Veh,
-								math.sqrt(Vel.x ^ 2 + Vel.y ^ 2 + Vel.z ^ 2))
-							ENTITY.SET_ENTITY_VELOCITY(Veh, Vel.x, Vel.y, Vel.z)
-							ENTITY.SET_ENTITY_ANGULAR_VELOCITY(Veh, AngVel.x, AngVel.y, AngVel.z)
-						end
-					end
-				else
-					ReplayVehsT[k].Index = 0
 				end
 			else
-				table.remove(ReplayVehsT, k)
+				if CanClearTable then
+					table.remove(T, k)
+				end
 			end
 		end
 		ReplayData.ForceUpdate = false
-		if not StartReplay then
-			for k = 1, #ReplayVehsT do
-				if ReplayVehsT[k].VehHandle ~= 0 and ENTITY.DOES_ENTITY_EXIST(ReplayVehsT[k].VehHandle) then
-					if ReplayVehsT[k].Blip ~= 0 then
-						util.remove_blip(ReplayVehsT[k].Blip)
+		if not Run then
+			for k = 1, #T do
+				if T[k].VehHandle ~= 0 and ENTITY.DOES_ENTITY_EXIST(T[k].VehHandle) then
+					if T[k].Blip ~= 0 then
+						util.remove_blip(T[k].Blip)
 					end
-					entities.delete_by_handle(ReplayVehsT[k].VehHandle)
+					entities.delete_by_handle(T[k].VehHandle)
 				end
-				if ReplayVehsT[k].PedHandle ~= 0 and ENTITY.DOES_ENTITY_EXIST(ReplayVehsT[k].PedHandle) then
-					if ReplayVehsT[k].PedBlip ~= 0 then
-						util.remove_blip(ReplayVehsT[k].PedBlip)
+				if T[k].PedHandle ~= 0 and ENTITY.DOES_ENTITY_EXIST(T[k].PedHandle) then
+					if T[k].PedBlip ~= 0 then
+						util.remove_blip(T[k].PedBlip)
 					end
-					entities.delete_by_handle(ReplayVehsT[k].PedHandle)
+					entities.delete_by_handle(T[k].PedHandle)
 				end
 			end
-			ReplayVehsT = {}
+			T = {}
 			ReplayID = 0
 			ReplayData.StartTimer = 0
 			return true
@@ -1257,8 +1335,8 @@ local ReplayPlayback = {
 	end
 }
 
-function StartReplaysPlayback()
-	return ReplayPlayback[ReplayID]()
+function StartReplaysPlayback(Run)
+	return ReplayPlayback[ReplayID](ReplayVehsT, Run, true)
 end
 
 ReplayFeatures[#ReplayFeatures+1] = {Hash = Utils.Joaat("Replay_StartSelectedReplays"),
@@ -1269,12 +1347,12 @@ ReplayFeatures[#ReplayFeatures+1] = {Hash = Utils.Joaat("Replay_StartSelectedRep
 		if StartReplay then
 			Script.QueueJob(function()
 				while StartReplay do
-					StartReplaysPlayback()
+					StartReplaysPlayback(true)
 					Script.Yield(0)
 				end
 			end)
 		else
-			StartReplaysPlayback()
+			StartReplaysPlayback(false)
 		end
 	end)
 }
@@ -1688,8 +1766,6 @@ function UpgradeVehicle(Vehicle, RandomUpgrade, SetRandomColors, SetRandomCustom
 	end
 end
 
---local ScriptedToolsMenu = menu.list(menu.my_root(), "Scripted Tools", {}, "")
-
 function GetEntityFromScript(ScriptName, Local)
 	local ScriptHash = Utils.Joaat(ScriptName)
 	local Handle = 0
@@ -1887,27 +1963,13 @@ function GetVectorsFromIndex(Txts)
 	return Vectors
 end
 
-local GameModeMakerData = {
-	MissionVehicles = {},
-	Vehicles = {},
-	PreviewVehicles = {},
-	MaxVehicles = 32,
-	ListVehicles = {},
-	ListVehicleTypes = {
-		"Normal",
-		"Replay"
-	},
-	VehicleTypesEnum = {
-		Normal = 1,
-		Repaly = 2
-	},
-	GMVehIndex = 1
-}
+
 for k = 1, GameModeMakerData.MaxVehicles do
-	GameModeMakerData.ListVehicles[#GameModeMakerData.ListVehicles+1] = tostring(k-1)
+	GameModeMakerData.ListVehicles[k] = tostring(k-1)
 	local Data = {
 		VehicleType = 1,
-		VehicleID = tostring(k-1),
+		VehicleID = k-1,
+		PathToPathsIndex = 1,
 		PathToPaths = nil,
 		Invincible = false,
 		AttachedTo = -1,
@@ -1918,23 +1980,128 @@ for k = 1, GameModeMakerData.MaxVehicles do
 		TeamPlayerIndex = -1,
 		Use = false
 	}
-	GameModeMakerData.MissionVehicles[#GameModeMakerData.MissionVehicles+1] = Data
+	GameModeMakerData.MissionVehicles[k] = Data
 end
 
 local GameModeMakerFeatures = {}
-local GMFeatures = {
-	GMVehIndexFeature = nil
-}
 
+--[[
 local GameModePreview = false
 GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GameModePreview"),
 Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GameModePreview"), "Game Mode Preview", eFeatureType.Toggle, "Preview positions.",
 	function(f)
 		GameModePreview = f:IsToggled()
-
 	end)
 }
-
+]]
+local RunGameMode = false
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_RunGameMode"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_RunGameMode"), "Run Game Mode", eFeatureType.Toggle, "Needs to be in a mission.",
+	function(f)
+		RunGameMode = f:IsToggled()
+		Script.QueueJob(function()
+			if RunGameMode then
+				local S = "fm_mission_controller"
+				local SHash = Utils.Joaat(S)
+				local Vehs = {}
+				local ReplayVehicles = {}
+				for k = 1, GameModeMakerData.MaxVehicles do
+					local Data = GameModeMakerData.MissionVehicles[k]
+					if Data.Use then
+						if Data.VehicleType == GameModeMakerData.VehicleTypesEnum.Replay and Data.PathToPaths then
+							ReplayVehicles[#ReplayVehicles + 1] = {
+								VehHandle = 0,
+								ModelHash = 0,
+								Paths = GetVectorsTable(PathDirSaveds..Data.PathToPaths..".txt", true, false),
+								Index = 0,
+								Blip = 0,
+								StartTimer = 0,
+								PedHandle = 0,
+								PedBlip = 0,
+								HasSetStartTimer = false,
+								TaskMS = 0,
+								IsCargoPlane = false
+							}
+							Vehs[#Vehs+1] = {Data = Data, Replay = ReplayVehicles[#ReplayVehicles], Handle = 0}
+						else
+							Vehs[#Vehs+1] = {Data = Data, Handle = 0}
+						end
+					end
+				end
+				local PlayerID = PLAYER.PLAYER_ID()
+				local HostMilis = 0
+				local VehsLocal = SplitGlobals("uLocal_23609.f_834.f_81")
+				local VehIDs = {}
+				while RunGameMode do
+					if SCRIPT.GET_NUMBER_OF_THREADS_RUNNING_THE_SCRIPT_WITH_THIS_HASH(SHash) > 0 then
+						local IsHost = false
+						Script.ExecuteAsScript("fm_mission_controller", function()
+							IsHost = NETWORK.NETWORK_IS_HOST_OF_THIS_SCRIPT()
+						end)
+						local GameTimer = MISC.GET_GAME_TIMER()
+						if not IsHost then
+							if GameTimer > HostMilis then
+								HostMilis = GameTimer + 1000
+								GTA.ForceScriptHost(SHash)
+							end
+						end
+						if not Started then
+							ReplayData.StartTimer = 0
+							ReplayData.LastGameTimer = GameTimer
+							if PLAYER.IS_PLAYER_CONTROL_ON(PlayerID) then
+								Started = true
+							end
+						end
+						for k = 1, #Vehs do
+							local Data = Vehs[k].Data
+							local Replay = Vehs[k].Replay
+							local ID = Data.VehicleID
+							if Replay ~= nil then
+								if Replay.VehHandle == 0 then
+									Replay.VehHandle = GetEntityFromScript(S, VehsLocal + (ID+1))
+									Vehs[k].Handle = Replay.VehHandle
+								else
+									VehIDs[ID] = Vehs[k].Handle
+									if not ENTITY.DOES_ENTITY_EXIST(Vehs[k].Handle) or ENTITY.IS_ENTITY_DEAD(Vehs[k].Handle) then
+										Replay.VehHandle = 0
+									end
+								end
+							end
+							if Vehs[k].Handle == 0 then
+								Vehs[k].Handle = GetEntityFromScript(S, VehsLocal + (ID+1))
+							else
+								local Handle = Vehs[k].Handle
+								if ENTITY.DOES_ENTITY_EXIST(Handle) and not ENTITY.IS_ENTITY_DEAD(Handle) then
+									VehIDs[ID] = Handle
+									if RequestControlOfEntity(Handle) then
+										entities.set_can_migrate(Handle, false)
+										if Data.AttachedTo > -1 then
+											local AID = Data.AttachedTo
+											if VehIDs[AID] and ENTITY.DOES_ENTITY_EXIST(VehIDs[AID]) then
+												local O1 = Data.AttachOffset
+												local O2 = Data.AttachRot
+												ENTITY.ATTACH_ENTITY_TO_ENTITY(Handle, VehIDs[AID], 0, O1.x, O1.y, O1.z, O2.x, O2.y, O2.z, false, false, false, false, 2, true, false)
+											end
+										end
+										if Data.Invincible then
+											ENTITY.SET_ENTITY_INVINCIBLE(Handle, true)
+										end
+									end
+								else
+									Vehs[k].Handle = 0
+								end
+							end
+						end
+						ReplayPlayback[2](ReplayVehicles, true, false)
+					else
+						Started = false
+					end
+					Script.Yield(0)
+				end
+			end
+		end)
+	end)
+}
 
 GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMResetSettings"),
 Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMResetSettings"), "Reset Settings", eFeatureType.Button, "",
@@ -1944,7 +2111,8 @@ Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMResetSettings"), "Reset Se
 		for k = 1, Total do
 			local Data = {
 				VehicleType = 1,
-				VehicleID = tostring(k-1),
+				VehicleID = k-1,
+				PathToPathsIndex = 1,
 				PathToPaths = nil,
 				Invincible = false,
 				AttachedTo = -1,
@@ -1955,27 +2123,184 @@ Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMResetSettings"), "Reset Se
 				TeamPlayerIndex = -1,
 				Use = false
 			}
-			GameModeMakerData.MissionVehicles[#GameModeMakerData.MissionVehicles+1] = Data
+			GameModeMakerData.MissionVehicles[k] = Data
 		end
 	end)
 }
 
+
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSetFileName"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSetFileName"), "Game Mode Name", eFeatureType.InputText, "",
+	function(f)
+		GameModeMakerData.GameModeName = f:GetStringValue()
+	end)
+}
+
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMRefreshGameModes"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMRefreshGameModes"), "Refresh Game Modes", eFeatureType.Button, "",
+	function()
+		GetGameModesList()
+	end)
+}
+
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMLoadGameMode"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMLoadGameMode"), "Load Game Mode", eFeatureType.Combo, "",
+	function(f)
+		local Index = f:GetListIndex() + 1
+		if GameModeMakerData.GameModes[Index] then
+			local T = LoadJSON(GameModeMakerData.GameModes[Index])
+			GameModeMakerData.MissionVehicles = T.MissionVehicles
+			local Data = GameModeMakerData.MissionVehicles[Index]
+			GMFeatures.GMVehTypeFeature:SetListIndex(Data.VehicleType - 1)
+			if Data.PathToPaths then
+				local RIndex = FindReplayIndex(Data.PathToPaths) - 1
+				GMFeatures.GMVehReplayFileFeature:SetListIndex(RIndex)
+			end
+			GMFeatures.GMVehInvincibleFeature:SetValue(Data.Invincible)
+			GMFeatures.GMVehAttachedToFeature:SetValue(Data.AttachedTo)
+			GMFeatures.GMVehAttachOffsetXFeature:SetValue(ToFloat(Data.AttachOffset.x))
+			GMFeatures.GMVehAttachOffsetYFeature:SetValue(ToFloat(Data.AttachOffset.y))
+			GMFeatures.GMVehAttachOffsetZFeature:SetValue(ToFloat(Data.AttachOffset.z))
+			GMFeatures.GMVehAttachRotXFeature:SetValue(ToFloat(Data.AttachRot.x))
+			GMFeatures.GMVehAttachRotYFeature:SetValue(ToFloat(Data.AttachRot.y))
+			GMFeatures.GMVehAttachRotZFeature:SetValue(ToFloat(Data.AttachRot.z))
+			GMFeatures.GMVehRespawnForTeamFeature:SetValue(Data.RespawnVehForTeam)
+			GMFeatures.GMVehUseBoolFeature:SetValue(Data.Use)
+		end
+	end)
+}
+GMFeatures.GMLoadGameModeFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSaveGameMode"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSaveGameMode"), "Save Game Mode", eFeatureType.Button, "",
+	function()
+		local T = {
+			MissionVehicles = GameModeMakerData.MissionVehicles
+		}
+		SaveJSONFile(GameModesDir..GameModeMakerData.GameModeName..".json", T)
+		GetGameModesList()
+	end)
+}
+
+function FindReplayIndex(ReplayFile)
+	local Index = 1
+	for k = 1, #ReplayListFeatures do
+		if ReplayFile == ReplayListFeatures[k].FileName then
+			return k
+		end
+	end
+	return Index
+end
+
 GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSelectVehIndex"),
 Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSelectVehIndex"), "Select Vehicle Index To Edit", eFeatureType.Combo, "",
 	function(f)
-		GameModeMakerData.GMVehIndex = f:GetListIndex() + 1
+		local Index = f:GetListIndex() + 1
+		GameModeMakerData.GMVehIndex = Index
+		local Data = GameModeMakerData.MissionVehicles[Index]
+		GMFeatures.GMVehTypeFeature:SetListIndex(Data.VehicleType - 1)
+		if Data.PathToPaths then
+			local RIndex = FindReplayIndex(Data.PathToPaths) - 1
+			GMFeatures.GMVehReplayFileFeature:SetListIndex(RIndex)
+		end
+		GMFeatures.GMVehInvincibleFeature:SetValue(Data.Invincible)
+		GMFeatures.GMVehAttachedToFeature:SetValue(Data.AttachedTo)
+		GMFeatures.GMVehAttachOffsetXFeature:SetValue(ToFloat(Data.AttachOffset.x))
+		GMFeatures.GMVehAttachOffsetYFeature:SetValue(ToFloat(Data.AttachOffset.y))
+		GMFeatures.GMVehAttachOffsetZFeature:SetValue(ToFloat(Data.AttachOffset.z))
+		GMFeatures.GMVehAttachRotXFeature:SetValue(ToFloat(Data.AttachRot.x))
+		GMFeatures.GMVehAttachRotYFeature:SetValue(ToFloat(Data.AttachRot.y))
+		GMFeatures.GMVehAttachRotZFeature:SetValue(ToFloat(Data.AttachRot.z))
+		GMFeatures.GMVehRespawnForTeamFeature:SetValue(Data.RespawnVehForTeam)
+		GMFeatures.GMVehUseBoolFeature:SetValue(Data.Use)
 	end):SetList(GameModeMakerData.ListVehicles)
 }
 GMFeatures.GMVehIndexFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
 
-GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_SelectVehIndex"),
-Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_SelectVehIndex"), "Select Vehicle Index To Edit", eFeatureType.Combo, "",
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSetVehicleType"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSetVehicleType"), "Vehicle Type", eFeatureType.Combo, "",
 	function(f)
-		GMVehIndex = f:GetListIndex() + 1
-	end):SetList(GameModeMakerData.ListVehicles)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].VehicleType = f:GetListIndex() + 1
+	end):SetList(GameModeMakerData.ListVehicleTypes)
 }
+GMFeatures.GMVehTypeFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
 
-
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSetVehicleReplayFile"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSetVehicleReplayFile"), "Replay File", eFeatureType.Combo, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].PathToPaths = ReplayListFeatures[f:GetListIndex() + 1].FileName
+	end):SetList(GameModeMakerData.ListReplayFiles)
+}
+GMFeatures.GMVehReplayFileFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSetVehicleInvincible"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSetVehicleInvincible"), "Set Vehicle Invincible", eFeatureType.Toggle, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].Invincible = f:IsToggled()
+	end)
+}
+GMFeatures.GMVehInvincibleFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMSetVehicleAttachedTo"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMSetVehicleAttachedTo"), "Set Vehicle Attached To", eFeatureType.InputInt, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].AttachedTo = f:GetIntValue()
+	end):SetMaxValue(31):SetMinValue(-1):SetValue(-1)
+}
+GMFeatures.GMVehAttachedToFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMVehAttachOffsetX"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMVehAttachOffsetX"), "Attach Offset X", eFeatureType.InputFloat, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].AttachOffset.x = f:GetFloatValue()
+	end):SetMaxValue(1000.0):SetMinValue(-1000.0):SetValue(0.0)
+}
+GMFeatures.GMVehAttachOffsetXFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMVehAttachOffsetY"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMVehAttachOffsetY"), "Attach Offset Y", eFeatureType.InputFloat, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].AttachOffset.y = f:GetFloatValue()
+	end):SetMaxValue(1000.0):SetMinValue(-1000.0):SetValue(0.0)
+}
+GMFeatures.GMVehAttachOffsetYFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMVehAttachOffsetZ"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMVehAttachOffsetZ"), "Attach Offset Z", eFeatureType.InputFloat, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].AttachOffset.z = f:GetFloatValue()
+	end):SetMaxValue(1000.0):SetMinValue(-1000.0):SetValue(0.0)
+}
+GMFeatures.GMVehAttachOffsetZFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMVehAttachRotX"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMVehAttachRotX"), "Attach Rot X", eFeatureType.InputFloat, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].AttachRot.x = f:GetFloatValue()
+	end):SetMaxValue(180.0):SetMinValue(-180.0):SetValue(0.0)
+}
+GMFeatures.GMVehAttachRotXFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMVehAttachRotY"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMVehAttachRotY"), "Attach Rot Y", eFeatureType.InputFloat, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].AttachRot.y = f:GetFloatValue()
+	end):SetMaxValue(180.0):SetMinValue(-180.0):SetValue(0.0)
+}
+GMFeatures.GMVehAttachRotYFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMVehAttachRotZ"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMVehAttachRotZ"), "Attach Rot Z", eFeatureType.InputFloat, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].AttachRot.z = f:GetFloatValue()
+	end):SetMaxValue(180.0):SetMinValue(-180.0):SetValue(0.0)
+}
+GMFeatures.GMVehAttachRotZFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMRespawnVehForTeam"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMRespawnVehForTeam"), "Respawn Vehicle For Team", eFeatureType.InputInt, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].RespawnVehForTeam = f:GetIntValue()
+	end):SetMaxValue(3):SetMinValue(-1):SetValue(-1)
+}
+GMFeatures.GMVehRespawnForTeamFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
+GameModeMakerFeatures[#GameModeMakerFeatures+1] = {Hash = Utils.Joaat("Replay_GMUseVehicle"),
+Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_GMUseVehicle"), "Use Vehicle", eFeatureType.Toggle, "",
+	function(f)
+		GameModeMakerData.MissionVehicles[GameModeMakerData.GMVehIndex].Use = f:IsToggled()
+	end)
+}
+GMFeatures.GMVehUseBoolFeature = GameModeMakerFeatures[#GameModeMakerFeatures].Feature
 ClickGUI.AddTab("Path Replay", function()
 	if ImGui.BeginTabBar("Path Replay", 0) then
 		if ImGui.BeginTabItem("Recording") then
