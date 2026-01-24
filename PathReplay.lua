@@ -430,12 +430,12 @@ local AiLikeHateAiHateRel = "rgFM_AiLike_HateAiHate"
 local AiHateAiHateRel = "rgFM_HateAiHate"
 local AiHateEveryone = "rgFM_HateEveryOne"
 
-local EmptyRecord = false
+local EmptyRecord = true
 RecordFeatures[#RecordFeatures+1] = {Hash = Utils.Joaat("Replay_EmptyRecord"),
 Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_EmptyRecord"), "Empty Record Before Saving", eFeatureType.Toggle, "",
 	function(f)
 		EmptyRecord = f:IsToggled()
-	end)
+	end):SetValue(EmptyRecord)
 }
 
 local RegisteredV2 = {}
@@ -685,6 +685,7 @@ RecordFeatures[#RecordFeatures+1] = {
 						if Hit and Ent ~= 0 then
 							local Idx = idx_of_handle(RegisteredV2, Ent)
 							if Idx ~= 0 then
+								entities.set_can_migrate(Ent, true)
 								table.remove(RegisteredV2, Idx)
 								Print("Unregistered vehicle handle " .. tostring(Ent).. " index "..Idx)
 								GUI.AddToast("Path Replay", "Unregistered vehicle handle " .. tostring(Ent).. " index "..Idx, 3000, eToastPos.TOP_RIGHT )
@@ -732,7 +733,7 @@ local ReplayData = {
 local InterpolationFactor = 10.0
 RecordFeatures[#RecordFeatures+1] = {
 	Hash = Utils.Joaat("Replay_StartRecording"),
-	Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_StartRecording"), "Start Recording", eFeatureType.Toggle, "Supports recording more than one vehicle at the same time.",
+	Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_StartRecording"), "Start Recording", eFeatureType.Toggle, "Supports recording more than one vehicle at the same time alone.",
 	function(f)
 		RecordingV2 = f:IsToggled()
 		Script.QueueJob(function()
@@ -1036,6 +1037,301 @@ RecordFeatures[#RecordFeatures+1] = {
 	end)
 }
 
+RecordFeatures[#RecordFeatures+1] = {
+	Hash = Utils.Joaat("Replay_StartMultiplayerRecording"),
+	Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_StartMultiplayerRecording"), "Start Multiplayer Recording", eFeatureType.Toggle, "Supports recording more than one vehicle at the same time with players or npcs in other registered vehicles.",
+	function(f)
+		RecordingV2 = f:IsToggled()
+		Script.QueueJob(function()
+			if RecordingV2 then
+				local Records = {}
+				CurrentVehicleV2 = 0
+				local LastGameTimer = MISC.GET_GAME_TIMER()
+				local IsRewinding = false
+				local FocusedIndex = 1
+				local FirstVeh = 0
+				local FirstVehIndex = 1
+				local function ApplyFrame(Veh, F)
+					--ENTITY.FREEZE_ENTITY_POSITION(Veh, false)
+					TASK.CLEAR_VEHICLE_CRASH_TASK(Veh)
+					VEHICLE.SET_DISABLE_AUTOMATIC_CRASH_TASK(Veh, false)
+					VEHICLE.SET_DIP_STRAIGHT_DOWN_WHEN_CRASHING_PLANE(Veh, false)
+					VEHICLE.SET_VEHICLE_ENGINE_ON(Veh, true, true, false)
+					VEHICLE.SET_VEHICLE_KEEP_ENGINE_ON_WHEN_ABANDONED(Veh, true)
+					ENTITY.SET_ENTITY_COORDS_NO_OFFSET(Veh, F.Pos.x, F.Pos.y, F.Pos.z)
+					ENTITY.SET_ENTITY_ROTATION(Veh, F.Rot.x, F.Rot.y, F.Rot.z, 5)
+					VEHICLE.SET_VEHICLE_FORWARD_SPEED(Veh,
+						math.sqrt(F.Vel.x ^ 2 + F.Vel.y ^ 2 + F.Vel.z ^ 2) * 1.5)
+					ENTITY.SET_ENTITY_VELOCITY(Veh, F.Vel.x, F.Vel.y, F.Vel.z)
+					ENTITY.SET_ENTITY_ANGULAR_VELOCITY(Veh, F.Ang.x, F.Ang.y, F.Ang.z)
+				end
+				local function ResetReplays(IgnoreIndex, LastFrame, Time)
+					for k = 1, #RegisteredV2 do
+						if IgnoreIndex ~= k then
+							if Records[k] ~= nil and #Records[k].FramesData > 0 and #Records[k].FramesData[#Records[k].FramesData] > 0 then
+								local Veh = RegisteredV2[k]
+								local F = nil
+								if LastFrame then
+									F = Records[k].FramesData[#Records[k].FramesData][#Records[k].FramesData[#Records[k].FramesData]]
+								else
+									F = Records[k].FramesData[#Records[k].FramesData][1]
+								end
+								Records[k].ReplayTime = Time or F.Time
+								ApplyFrame(Veh, F)
+								Records[k].ReplayTP = true
+							end
+						end
+					end
+				end
+				local function ApplyPositions(SetSpeed)
+					for k = 1, #RegisteredV2 do
+						if Records[k] ~= nil then
+							local Veh = RegisteredV2[k]
+							local Pos = ENTITY.GET_ENTITY_COORDS(Veh)
+							local Rot = ENTITY.GET_ENTITY_ROTATION(Veh, 5)
+							local Vel = ENTITY.GET_ENTITY_VELOCITY(Veh)
+							local Ang = ENTITY.GET_ENTITY_ROTATION_VELOCITY(Veh)
+							Records[k].LastData = {
+								Pos = Pos,
+								Rot = Rot,
+								Vel = Vel,
+								Ang = Ang
+							}
+							if SetSpeed then
+								Records[k].SetSpeed = true
+							end
+						end
+					end
+				end
+				local function EnsureVehicleControls(CanMigrate)
+					local Count = 1
+					for k = 1, #RegisteredV2 do
+						if k ~= FirstVehIndex then
+							local Veh = RegisteredV2[k]
+							if not CanMigrate then
+								if RequestControlOfEntity(Veh) then
+									entities.set_can_migrate(Veh, false)
+									Count = Count + 1
+								end
+							else
+								if NETWORK.NETWORK_HAS_CONTROL_OF_ENTITY(Veh) then
+									entities.set_can_migrate(Veh, true)
+								else
+									Count = Count + 1
+								end
+							end
+						end
+					end
+					return Count == #RegisteredV2
+				end
+				if PauseReplay then
+					if PauseReplayFeature then
+						PauseReplayFeature:Toggle()
+					end
+				end
+				local TimerOffset = ReplayData.StartTimer or 0
+				local RewindRequested = false
+				local DoRewind = false
+				local BusyState = false
+				local Ensured = false
+				local EnsuredMS = 0
+				while RecordingV2 do
+					local now = MISC.GET_GAME_TIMER()
+					local delta = now - LastGameTimer
+					if delta < 0 then delta = 0 end
+					LastGameTimer = now
+					PAD.DISABLE_CONTROL_ACTION(0, 99, true) -- R
+					RewindRequested = PAD.IS_DISABLED_CONTROL_PRESSED(0, 99)
+					if RewindRequested then
+						BusyState = true
+						Ensured = false
+						if EnsureVehicleControls(false) then
+							if now > EnsuredMS then
+								BusyState = false
+								DoRewind = true
+							end
+						else
+							EnsuredMS = now + 100
+						end
+					else
+						DoRewind = false
+						if not Ensured then
+							if EnsureVehicleControls(true) then
+								BusyState = false
+								Ensured = true
+							end
+						end
+					end
+					PAD.DISABLE_CONTROL_ACTION(0, 75, true) -- F
+					local SwitchRequested = false
+					PAD.DISABLE_CONTROL_ACTION(0, 51, true) -- E
+					ReplayData.IsRewinding = DoRewind
+					if CurrentVehicleV2 == 0 then
+						CurrentVehicleV2 = PED.GET_VEHICLE_PED_IS_IN(PLAYER.PLAYER_PED_ID(), true)
+						if CurrentVehicleV2 == 0 and #RegisteredV2 > 0 then
+							CurrentVehicleV2 = RegisteredV2[1]
+						else
+							if #RegisteredV2 == 0 and CurrentVehicleV2 ~= 0 then
+								RegisteredV2[#RegisteredV2+1] = CurrentVehicleV2
+							end
+						end
+					else
+						if not PED.IS_PED_IN_VEHICLE(PLAYER.PLAYER_PED_ID(), CurrentVehicleV2, true) then
+							PED.SET_PED_INTO_VEHICLE(PLAYER.PLAYER_PED_ID(), CurrentVehicleV2, -1)
+						end
+					end
+					if FirstVeh == 0 and CurrentVehicleV2 ~= 0 then
+						FirstVeh = CurrentVehicleV2
+						FocusedIndex = idx_of_handle(RegisteredV2, FirstVeh)
+						FirstVehIndex = FocusedIndex
+					end
+					if CurrentVehicleV2 ~= 0 then
+						CurrentVehicleV2 = RegisteredV2[FocusedIndex]
+					end
+					for k = 1, #RegisteredV2 do
+						local Veh = RegisteredV2[k]
+						local IsFirstVeh = Veh == FirstVeh
+						local IsFocused = true
+						if Records[k] == nil then
+							Records[k] = {
+								Veh = Veh,
+								FramesData = {},
+								Frames = {},
+								Time = 0,
+								ReplayTime = 0,
+								LastIndex = 1,
+								SetSpeed = false,
+								GetData = false,
+								LastData = nil,
+								ReplayTP = false
+							}
+						end
+						if IsFocused then
+							if not DoRewind then
+								ENTITY.FREEZE_ENTITY_POSITION(Veh, false)
+								if Records[k].SetSpeed then
+									Records[k].SetSpeed = false
+									if Records[k].LastData then
+										ApplyFrame(Veh, Records[k].LastData)
+									end
+								end
+								local Pos = ENTITY.GET_ENTITY_COORDS(Veh)
+								local Rot = ENTITY.GET_ENTITY_ROTATION(Veh, 5)
+								local Vel = ENTITY.GET_ENTITY_VELOCITY(Veh)
+								local Ang = ENTITY.GET_ENTITY_ROTATION_VELOCITY(Veh)
+								local Model = ENTITY.GET_ENTITY_MODEL(Veh)
+								if not BusyState then
+									Records[k].Time = Records[k].Time + delta
+									Records[k].Frames[#Records[k].Frames+1] = {
+										Pos = Pos,
+										Rot = Rot,
+										Vel = Vel,
+										Ang = Ang,
+										Model = Model,
+										Time = Records[k].Time
+									}
+								else
+									--ENTITY.FREEZE_ENTITY_POSITION(Veh, true)
+									ApplyFrame(Veh, Records[k].Frames[#Records[k].Frames])
+									--Pos = ENTITY.GET_ENTITY_COORDS(Veh)
+									--Rot = ENTITY.GET_ENTITY_ROTATION(Veh, 5)
+									--Vel = ENTITY.GET_ENTITY_VELOCITY(Veh)
+									--Ang = ENTITY.GET_ENTITY_ROTATION_VELOCITY(Veh)
+									--Records[k].LastData = {
+									--	Pos = Pos,
+									--	Rot = Rot,
+									--	Vel = Vel,
+									--	Ang = Ang
+									--}
+									--Records[k].SetSpeed = true
+									local F = Records[k].Frames[#Records[k].Frames]
+									Records[k].LastData = {
+										Pos = F.Pos,
+										Rot = F.Rot,
+										Vel = F.Vel,
+										Ang = F.Ang
+									}
+								end
+								if not Records[k].GetData then
+									Records[k].GetData = true
+									Records[k].LastData = {
+										Pos = Pos,
+										Rot = Rot,
+										Vel = Vel,
+										Ang = Ang
+									}
+								end
+							else
+								if not BusyState then
+									--Records[k].SetSpeed = true
+									if #Records[k].Frames > 0 then
+										Records[k].Time = math.max(0, Records[k].Time - delta)
+										-- remove frames que ficaram "à frente" do tempo atual
+										local i = #Records[k].Frames
+										while i > 0 and Records[k].Frames[i].Time > Records[k].Time do
+											table.remove(Records[k].Frames, i)
+											i = i - 1
+										end
+										if #Records[k].Frames > 0 then
+											local F = Records[k].Frames[#Records[k].Frames]
+											ApplyFrame(Veh, F)
+											--local Pos = ENTITY.GET_ENTITY_COORDS(Veh)
+											--local Rot = ENTITY.GET_ENTITY_ROTATION(Veh, 5)
+											--local Vel = ENTITY.GET_ENTITY_VELOCITY(Veh)
+											--local Ang = ENTITY.GET_ENTITY_ROTATION_VELOCITY(Veh)
+											Records[k].LastData = {
+												Pos = F.Pos,
+												Rot = F.Rot,
+												Vel = F.Vel,
+												Ang = F.Ang
+											}
+											Records[k].SetSpeed = true
+										end
+									else
+										if #Records[k].FramesData > 0 then
+											local F = Records[k].FramesData[#Records[k].FramesData][#Records[k].FramesData[#Records[k].FramesData]]
+											ApplyFrame(Veh, F)
+											ENTITY.FREEZE_ENTITY_POSITION(Veh, true)
+										end
+									end
+								end
+							end
+							ReplayData.StartTimer = (Records[k].Time or 0) + TimerOffset
+						end
+					end
+					Script.Yield(0)
+				end
+				for k = 1, #RegisteredV2 do
+					if Records[k] ~= nil then
+						local Frames = CopyTable(Records[k].Frames)
+						Records[k].FramesData[#Records[k].FramesData+1] = Frames
+						Records[k].Frames = {}
+					end
+				end
+				local ID = 1
+				for k = 1, #RegisteredV2 do
+					if Records[k] ~= nil and #Records[k].FramesData > 0 then
+						local Path = PathDirSaveds .. FileNameForSave .. "_" .. ID .. ".txt"
+						local Out = {}
+						for i = 1, #Records[k].FramesData do
+							for j = 1, #Records[k].FramesData[i] do
+								local F = Records[k].FramesData[i][j]
+								Out[#Out + 1] = ToTxt(F.Pos, F.Rot, F.Vel, F.Ang, F.Time + TimerOffset, F.Model)
+							end
+						end
+						if EmptyRecord then
+							ClearFile(Path)
+						end
+						WriteFile(Path, table.concat(Out))
+						Print(("💾 V3: Saved PathV3_%d (%d frames)"):format(ID, #Out))
+						ID = ID + 1
+					end
+				end
+			end
+		end)
+	end)
+}
+
 local Model = "shinobi"
 ReplayFeatures[#ReplayFeatures+1] = {Hash = Utils.Joaat("Replay_SetVehModel"), Feature = FeatureMgr.AddFeature(Utils.Joaat("Replay_SetVehModel"), "Set Veh Model", eFeatureType.InputText, "",
 	function(f)
@@ -1298,6 +1594,10 @@ local ReplayPlayback = {
 									math.sqrt(Vel.x ^ 2 + Vel.y ^ 2 + Vel.z ^ 2))
 								ENTITY.SET_ENTITY_VELOCITY(Veh, Vel.x, Vel.y, Vel.z)
 								ENTITY.SET_ENTITY_ANGULAR_VELOCITY(Veh, AngVel.x, AngVel.y, AngVel.z)
+							else
+								if PauseReplay then
+									ENTITY.FREEZE_ENTITY_POSITION(T[k].VehHandle, true)
+								end
 							end
 						end
 					else
